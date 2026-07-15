@@ -1,356 +1,212 @@
-// ===== HüseyinAI Ultra Pro Max =====
-// Pollinations AI — %100 Ücretsiz, API Anahtarı Gerektirmez!
-// Her soruyu ChatGPT gibi yanıtlar.
-const chatContainer = document.getElementById('chatContainer');
-const chatMessages = document.getElementById('chatMessages');
-const messageInput = document.getElementById('messageInput');
-const sendBtn = document.getElementById('sendBtn');
-const chatHistory = document.getElementById('chatHistory');
-const newChatBtn = document.getElementById('newChatBtn');
-const clearChatBtn = document.getElementById('clearChatBtn');
-const sidebar = document.getElementById('sidebar');
-const sidebarToggle = document.getElementById('sidebarToggle');
-const menuBtn = document.getElementById('menuBtn');
-const chatTitle = document.getElementById('chatTitle');
-const charCount = document.getElementById('charCount');
-let conversations = {};
-let currentConversationId = null;
-let isTyping = false;
-let abortCtrl = null;
-const SYSTEM_PROMPT = `Sen "HüseyinAI" adında, son derece zeki ve yardımsever bir Türkçe yapay zeka asistanısın.
-Kuralların:
-- Her zaman Türkçe yanıt ver.
-- Cevapların detaylı, doğru, kapsamlı ve faydalı olsun.
-- Markdown formatını aktif kullan: başlıklar (#, ##, ###), kalın (**metin**), italik (*metin*), kod blokları (\`\`\`dil), listeler (- veya 1.), tablolar, blockquote (>).
-- Emoji kullanarak yanıtlarını sıcak ve okunabilir yap.
-- Programlama sorularında çalışan, açıklamalı kod örnekleri ver.
-- Matematik sorularında adım adım çözüm göster.
-- Emin olmadığın bilgilerde bunu belirt.
-- Kullanıcıya karşı samimi, kibar ve profesyonel ol.
-- Yaratıcı içerik (hikaye, şiir) isteklerinde özgün ve etkileyici eserler üret.
-- Kısa sorulara kısa, uzun sorulara detaylı cevap ver.`;
-// ===== INIT =====
-function init() {
-    try { conversations = JSON.parse(localStorage.getItem('huseyinai_v4') || '{}'); } catch(e) { conversations = {}; }
-    setupEvents();
-    renderHistory();
-    if (Object.keys(conversations).length === 0) startNewChat();
-    else { const ids = Object.keys(conversations).sort((a,b) => conversations[b].updatedAt - conversations[a].updatedAt); loadChat(ids[0]); }
-}
-function save() { try { localStorage.setItem('huseyinai_v4', JSON.stringify(conversations)); } catch(e) {} }
-// ===== EVENTS =====
-function setupEvents() {
-    sendBtn.onclick = handleSend;
-    messageInput.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
-    messageInput.oninput = () => {
-        messageInput.style.height = 'auto';
-        messageInput.style.height = Math.min(messageInput.scrollHeight, 150) + 'px';
-        const l = messageInput.value.trim().length;
-        charCount.textContent = l;
-        sendBtn.disabled = l === 0 || isTyping;
-    };
-    newChatBtn.onclick = startNewChat;
-    clearChatBtn.onclick = clearChat;
-    sidebarToggle.onclick = () => { sidebar.classList.add('collapsed'); rmOverlay(); };
-    menuBtn.onclick = () => { sidebar.classList.remove('collapsed'); if (innerWidth <= 768) addOverlay(); };
-    document.querySelectorAll('.suggestion-card').forEach(c => c.onclick = () => {
-        messageInput.value = c.dataset.prompt; charCount.textContent = c.dataset.prompt.length;
-        sendBtn.disabled = false; handleSend();
-    });
-}
-function addOverlay() {
-    let o = document.querySelector('.sidebar-overlay');
-    if (!o) { o = document.createElement('div'); o.className = 'sidebar-overlay'; document.body.appendChild(o); }
-    o.classList.add('active');
-    o.onclick = () => { sidebar.classList.add('collapsed'); rmOverlay(); };
-}
-function rmOverlay() { const o = document.querySelector('.sidebar-overlay'); if (o) o.classList.remove('active'); }
-function scrollDown() { requestAnimationFrame(() => chatContainer.scrollTop = chatContainer.scrollHeight); }
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-function fmtTime(t) { return new Date(t).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }); }
-// ===== CHAT MANAGEMENT =====
-function startNewChat() {
-    if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
-    const id = 'c_' + Date.now();
-    conversations[id] = { id, title: 'Yeni Sohbet', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
-    currentConversationId = id; isTyping = false;
-    save(); renderHistory(); renderMsgs();
-    chatTitle.textContent = 'Yeni Sohbet';
-    messageInput.focus(); sendBtn.disabled = messageInput.value.trim().length === 0;
-    if (innerWidth <= 768) { sidebar.classList.add('collapsed'); rmOverlay(); }
-}
-function loadChat(id) {
-    if (!conversations[id]) return;
-    if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
-    isTyping = false; currentConversationId = id;
-    chatTitle.textContent = conversations[id].title;
-    renderMsgs(); renderHistory();
-    sendBtn.disabled = messageInput.value.trim().length === 0;
-}
-function clearChat() {
-    if (!currentConversationId) return;
-    if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
-    isTyping = false;
-    conversations[currentConversationId].messages = [];
-    conversations[currentConversationId].title = 'Yeni Sohbet';
-    chatTitle.textContent = 'Yeni Sohbet';
-    save(); renderMsgs(); renderHistory();
-}
-function deleteChat(id) {
-    delete conversations[id]; save();
-    if (currentConversationId === id) { const k = Object.keys(conversations); k.length ? loadChat(k[0]) : startNewChat(); }
-    renderHistory();
-}
-// ===== RENDER =====
-function renderHistory() {
-    chatHistory.innerHTML = '';
-    Object.values(conversations).sort((a,b) => b.updatedAt - a.updatedAt).forEach(c => {
-        const d = document.createElement('div');
-        d.className = 'chat-history-item' + (c.id === currentConversationId ? ' active' : '');
-        d.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg><span>${esc(c.title)}</span><button class="delete-chat" title="Sil"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>`;
-        d.onclick = e => {
-            if (e.target.closest('.delete-chat')) { e.stopPropagation(); deleteChat(c.id); return; }
-            loadChat(c.id);
-            if (innerWidth <= 768) { sidebar.classList.add('collapsed'); rmOverlay(); }
-        };
-        chatHistory.appendChild(d);
-    });
-}
-function renderMsgs() {
-    const c = conversations[currentConversationId]; if (!c) return;
-    chatMessages.innerHTML = '';
-    if (c.messages.length === 0) { chatMessages.appendChild(makeWelcome()); return; }
-    c.messages.forEach(m => chatMessages.appendChild(makeMsgEl(m)));
-    scrollDown();
-}
-function makeWelcome() {
-    const d = document.createElement('div'); d.className = 'welcome-screen';
-    d.innerHTML = `
-        <div class="welcome-icon"><div class="welcome-icon-inner"><svg viewBox="0 0 80 80" fill="none"><defs><linearGradient id="wg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#7c3aed"/><stop offset="50%" style="stop-color:#06b6d4"/><stop offset="100%" style="stop-color:#10b981"/></linearGradient></defs><circle cx="40" cy="40" r="35" stroke="url(#wg)" stroke-width="2" fill="none" opacity="0.3"/><circle cx="40" cy="40" r="25" stroke="url(#wg)" stroke-width="2" fill="none" opacity="0.5"/><circle cx="40" cy="40" r="6" fill="url(#wg)"/><path d="M26 40C26 32.268 32.268 26 40 26C47.732 26 54 32.268 54 40" stroke="url(#wg)" stroke-width="2.5" stroke-linecap="round"/><path d="M40 46V56" stroke="url(#wg)" stroke-width="2.5" stroke-linecap="round"/></svg></div><div class="welcome-pulse"></div></div>
-        <h2 class="welcome-title">Merhaba, Ben <span class="gradient-text">HüseyinAI</span></h2>
-        <p class="welcome-subtitle">Ultra Pro Max yapay zekanız. Her soruyu yanıtlarım! 🚀</p>
-        <div class="suggestion-cards">
-            <button class="suggestion-card" data-prompt="Kuantum fiziği nedir? Basitçe açıkla."><div class="suggestion-icon">⚛️</div><div class="suggestion-text"><strong>Kuantum Fiziği</strong><span>Basitçe açıkla</span></div></button>
-            <button class="suggestion-card" data-prompt="React ile modern bir todo uygulaması yaz, kodları ver."><div class="suggestion-icon">💻</div><div class="suggestion-text"><strong>React Todo App</strong><span>Komple kod yaz</span></div></button>
-            <button class="suggestion-card" data-prompt="Bana uzayda geçen etkileyici bir kısa hikaye yaz."><div class="suggestion-icon">🚀</div><div class="suggestion-text"><strong>Uzay Hikayesi</strong><span>Yaratıcı bir hikaye</span></div></button>
-            <button class="suggestion-card" data-prompt="İkinci Dünya Savaşı'nın sebeplerini ve sonuçlarını detaylı anlat."><div class="suggestion-icon">📜</div><div class="suggestion-text"><strong>Dünya Savaşı</strong><span>Detaylı tarih analizi</span></div></button>
-        </div>`;
-    d.querySelectorAll('.suggestion-card').forEach(c => c.onclick = () => {
-        messageInput.value = c.dataset.prompt; charCount.textContent = c.dataset.prompt.length;
-        sendBtn.disabled = false; handleSend();
-    });
-    return d;
-}
-function makeMsgEl(msg) {
-    const d = document.createElement('div'); d.className = `message ${msg.role}`;
-    d.innerHTML = `
-        <div class="message-avatar">${msg.role === 'ai' ? 'AI' : 'Sen'}</div>
-        <div class="message-content">
-            <div class="message-header">
-                <span class="message-name">${msg.role === 'ai' ? 'HüseyinAI' : 'Sen'}</span>
-                <span class="message-time">${fmtTime(msg.timestamp)}</span>
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="HüseyinAI Ultra Pro Max — Her soruyu yanıtlayan yapay zeka asistanı. ChatGPT alternatifi, ücretsiz ve güçlü.">
+    <title>HüseyinAI Ultra Pro Max — Yapay Zeka Asistanı</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Animated Background -->
+    <div class="bg-animation">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+        <div class="orb orb-4"></div>
+    </div>
+    <!-- ===== AUTH SCREEN ===== -->
+    <div class="auth-screen" id="authScreen">
+        <div class="auth-container">
+            <div class="auth-logo">
+                <div class="auth-logo-icon">
+                    <svg viewBox="0 0 80 80" fill="none">
+                        <defs>
+                            <linearGradient id="authGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" style="stop-color:#7c3aed"/>
+                                <stop offset="50%" style="stop-color:#06b6d4"/>
+                                <stop offset="100%" style="stop-color:#10b981"/>
+                            </linearGradient>
+                        </defs>
+                        <circle cx="40" cy="40" r="35" stroke="url(#authGrad)" stroke-width="2" fill="none" opacity="0.3"/>
+                        <circle cx="40" cy="40" r="25" stroke="url(#authGrad)" stroke-width="2" fill="none" opacity="0.5"/>
+                        <circle cx="40" cy="40" r="6" fill="url(#authGrad)"/>
+                        <path d="M26 40C26 32.268 32.268 26 40 26C47.732 26 54 32.268 54 40" stroke="url(#authGrad)" stroke-width="2.5" stroke-linecap="round"/>
+                        <path d="M40 46V56" stroke="url(#authGrad)" stroke-width="2.5" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <div class="auth-logo-pulse"></div>
             </div>
-            <div class="message-body">${renderMarkdown(msg.content)}</div>
-            <div class="message-actions">
-                <button class="msg-action-btn copy-msg-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Kopyala</button>
-                ${msg.role === 'ai' ? '<button class="msg-action-btn regen-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15"/></svg>Yeniden</button>' : ''}
+            <h1 class="auth-title">Hoş Geldiniz <span class="gradient-text">HüseyinAI</span>'ya</h1>
+            <p class="auth-subtitle">Ultra Pro Max yapay zeka deneyimine başlayın</p>
+            <!-- LOGIN FORM -->
+            <form class="auth-form" id="loginForm">
+                <div class="auth-form-group">
+                    <label for="loginEmail">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                    </label>
+                    <input type="email" id="loginEmail" placeholder="E-posta adresiniz" required autocomplete="email">
+                </div>
+                <div class="auth-form-group">
+                    <label for="loginPassword">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                    </label>
+                    <input type="password" id="loginPassword" placeholder="Şifreniz" required autocomplete="current-password">
+                    <button type="button" class="toggle-password" data-target="loginPassword" aria-label="Şifreyi göster">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                </div>
+                <div id="loginError" class="auth-error"></div>
+                <button type="submit" class="auth-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>
+                    Giriş Yap
+                </button>
+            </form>
+            <!-- REGISTER FORM -->
+            <form class="auth-form" id="registerForm" style="display:none;">
+                <div class="auth-form-group">
+                    <label for="regName">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    </label>
+                    <input type="text" id="regName" placeholder="Adınız" required autocomplete="name" minlength="2">
+                </div>
+                <div class="auth-form-group">
+                    <label for="regEmail">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                    </label>
+                    <input type="email" id="regEmail" placeholder="E-posta adresiniz" required autocomplete="email">
+                </div>
+                <div class="auth-form-group">
+                    <label for="regPassword">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                    </label>
+                    <input type="password" id="regPassword" placeholder="Şifre (min 6 karakter)" required autocomplete="new-password" minlength="6">
+                    <button type="button" class="toggle-password" data-target="regPassword" aria-label="Şifreyi göster">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                </div>
+                <div class="auth-form-group">
+                    <label for="regPasswordConfirm">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    </label>
+                    <input type="password" id="regPasswordConfirm" placeholder="Şifre tekrar" required autocomplete="new-password" minlength="6">
+                </div>
+                <div id="registerError" class="auth-error"></div>
+                <button type="submit" class="auth-btn auth-btn-register">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+                    Kayıt Ol
+                </button>
+            </form>
+            <div class="auth-switch">
+                <span id="authSwitchText">Hesabınız yok mu?</span>
+                <button type="button" class="auth-switch-btn" id="authSwitchBtn">Kayıt Ol</button>
             </div>
-        </div>`;
-    d.querySelector('.copy-msg-btn').onclick = function() {
-        navigator.clipboard.writeText(msg.content).then(() => {
-            this.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>Kopyalandı!';
-            setTimeout(() => { this.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Kopyala'; }, 2000);
-        });
-    };
-    const rb = d.querySelector('.regen-btn');
-    if (rb) rb.onclick = regenerate;
-    return d;
-}
-// ===== REGENERATE =====
-async function regenerate() {
-    if (isTyping) return;
-    const conv = conversations[currentConversationId];
-    if (!conv || conv.messages.length < 2) return;
-    conv.messages.pop(); save(); renderMsgs();
-    const lastQ = conv.messages[conv.messages.length - 1].content;
-    await sendToAI(lastQ);
-}
-// ===== HANDLE SEND =====
-async function handleSend() {
-    const text = messageInput.value.trim();
-    if (!text || isTyping) return;
-    const w = chatMessages.querySelector('.welcome-screen'); if (w) w.remove();
-    const um = { role: 'user', content: text, timestamp: Date.now() };
-    conversations[currentConversationId].messages.push(um);
-    chatMessages.appendChild(makeMsgEl(um));
-    if (conversations[currentConversationId].messages.length === 1) {
-        const t = text.length > 35 ? text.substring(0, 35) + '...' : text;
-        conversations[currentConversationId].title = t;
-        chatTitle.textContent = t; renderHistory();
-    }
-    messageInput.value = ''; charCount.textContent = '0'; messageInput.style.height = 'auto';
-    scrollDown();
-    await sendToAI(text);
-}
-// ============================================================
-// ===== ANA AI MOTORu — Pollinations AI (Ücretsiz, Sınırsız) =====
-// ============================================================
-const AI_MODELS = ['openai', 'mistral', 'llama', 'deepseek'];
-async function sendToAI(userMessage) {
-    isTyping = true; sendBtn.disabled = true;
-    // Show typing
-    const ti = document.createElement('div'); ti.className = 'message ai'; ti.id = 'ti';
-    ti.innerHTML = `<div class="message-avatar">AI</div><div class="message-content"><div class="message-header"><span class="message-name">HüseyinAI</span><span class="message-time">düşünüyor...</span></div><div class="typing-indicator"><span></span><span></span><span></span></div></div>`;
-    chatMessages.appendChild(ti); scrollDown();
-    let response = null;
-    // Her modeli dene, biri başarılı olana kadar
-    for (const model of AI_MODELS) {
-        try {
-            response = await callPollinationsAI(userMessage, model);
-            if (response) break;
-        } catch (err) {
-            console.warn(`Model ${model} başarısız:`, err.message);
-            // Rate-limit ise 2 saniye bekle
-            if (err.message.includes('429')) {
-                await new Promise(r => setTimeout(r, 2000));
-            }
-        }
-    }
-    if (!response) {
-        response = `Üzgünüm, şu anda sunuculara ulaşamadım. 😔\n\n**Çözüm önerileri:**\n1. İnternet bağlantınızı kontrol edin\n2. Birkaç saniye bekleyip tekrar deneyin\n3. Sayfayı yenileyin (F5)\n\n*Sunucu yoğunluğu nedeniyle geçici kesinti yaşanıyor olabilir.*`;
-    }
-    // Remove typing indicator
-    const indicator = document.getElementById('ti');
-    if (indicator) indicator.remove();
-    const am = { role: 'ai', content: response, timestamp: Date.now() };
-    conversations[currentConversationId].messages.push(am);
-    conversations[currentConversationId].updatedAt = Date.now();
-    chatMessages.appendChild(makeMsgEl(am));
-    save(); scrollDown();
-    isTyping = false;
-    sendBtn.disabled = messageInput.value.trim().length === 0;
-    messageInput.focus();
-}
-async function callPollinationsAI(userMessage, model = 'openai') {
-    abortCtrl = new AbortController();
-    // Son 20 mesajı context olarak gönder
-    const conv = conversations[currentConversationId];
-    const history = conv.messages.slice(-20);
-    const messages = [
-        { role: 'system', content: SYSTEM_PROMPT }
-    ];
-    for (const msg of history) {
-        messages.push({
-            role: msg.role === 'user' ? 'user' : 'assistant',
-            content: msg.content
-        });
-    }
-    if (messages[messages.length - 1]?.role !== 'user') {
-        messages.push({ role: 'user', content: userMessage });
-    }
-    // 30 saniye timeout
-    const timeoutId = setTimeout(() => { if (abortCtrl) abortCtrl.abort(); }, 30000);
-    try {
-        const response = await fetch('https://text.pollinations.ai/', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                messages: messages,
-                model: model,
-                seed: Math.floor(Math.random() * 100000),
-                jsonMode: false
-            }),
-            signal: abortCtrl.signal
-        });
-        clearTimeout(timeoutId);
-        abortCtrl = null;
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-        const text = await response.text();
-        if (!text || text.trim().length === 0) throw new Error('Boş yanıt');
-        return text.trim();
-    } catch (err) {
-        clearTimeout(timeoutId);
-        abortCtrl = null;
-        throw err;
-    }
-}
-// ===== MARKDOWN RENDERER =====
-function renderMarkdown(text) {
-    let h = esc(text);
-    // Code blocks
-    h = h.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-        `<pre><code class="language-${lang}">${code.trim()}</code><button class="copy-btn" onclick="copyCode(this)">Kopyala</button></pre>`
-    );
-    // Inline code
-    h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
-    // Headers
-    h = h.replace(/^#### (.+)$/gm, '<h4 style="font-size:0.95rem;font-weight:600;margin:12px 0 6px;">$1</h4>');
-    h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-    h = h.replace(/^## (.+)$/gm, '<h3 style="font-size:1.05rem;">$1</h3>');
-    h = h.replace(/^# (.+)$/gm, '<h3 style="font-size:1.15rem;">$1</h3>');
-    // Bold & Italic
-    h = h.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-    h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
-    // Links
-    h = h.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent-cyan);">$1</a>');
-    // Blockquotes
-    h = h.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-    h = h.replace(/<\/blockquote>\n<blockquote>/g, '<br>');
-    // Tables
-    const lines = h.split('\n');
-    let res = [], inT = false, tRows = [];
-    for (const line of lines) {
-        const t = line.trim();
-        if (t.startsWith('|') && t.endsWith('|')) {
-            if (!inT) { inT = true; tRows = []; }
-            if (!/^\|[\s\-:|]+\|$/.test(t)) tRows.push(t);
-        } else {
-            if (inT) { res.push(buildTable(tRows)); inT = false; }
-            res.push(line);
-        }
-    }
-    if (inT) res.push(buildTable(tRows));
-    h = res.join('\n');
-    // Lists
-    h = h.replace(/^- (.+)$/gm, '<li>$1</li>');
-    h = h.replace(/(<li>.*<\/li>\n?)+/g, match => `<ul>${match}</ul>`);
-    h = h.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
-    // HR
-    h = h.replace(/^---$/gm, '<hr style="border:none;border-top:1px solid var(--border-color);margin:16px 0;">');
-    // Paragraphs
-    h = h.replace(/\n\n/g, '</p><p>');
-    h = h.replace(/\n/g, '<br>');
-    h = '<p>' + h + '</p>';
-    // Cleanup
-    h = h.replace(/<p><\/p>/g, '');
-    h = h.replace(/<p>(<h[34]|<ul|<ol|<pre|<blockquote|<hr|<table)/g, '$1');
-    h = h.replace(/(<\/h[34]>|<\/ul>|<\/ol>|<\/pre>|<\/blockquote>|<\/table>)<\/p>/g, '$1');
-    return h;
-}
-function buildTable(rows) {
-    if (!rows.length) return '';
-    let h = '<table style="width:100%;border-collapse:collapse;margin:12px 0;font-size:0.875rem;">';
-    rows.forEach((r, i) => {
-        const cells = r.split('|').filter(x => x.trim());
-        const tag = i === 0 ? 'th' : 'td';
-        const bg = i === 0 ? 'background:rgba(124,58,237,0.1);font-weight:600;' : (i % 2 === 0 ? 'background:rgba(255,255,255,0.02);' : '');
-        h += '<tr>' + cells.map(c =>
-            `<${tag} style="padding:8px 12px;border:1px solid var(--border-color);text-align:left;${bg}">${c.trim()}</${tag}>`
-        ).join('') + '</tr>';
-    });
-    return h + '</table>';
-}
-window.copyCode = function(btn) {
-    const code = btn.previousElementSibling || btn.closest('pre').querySelector('code');
-    if (code) {
-        navigator.clipboard.writeText(code.textContent).then(() => {
-            btn.textContent = 'Kopyalandı!';
-            setTimeout(() => btn.textContent = 'Kopyala', 2000);
-        });
-    }
-};
-// ===== START =====
-document.addEventListener('DOMContentLoaded', init);
+        </div>
+    </div>
+    <!-- ===== CHAT APP ===== -->
+    <div class="app-container" id="appContainer" style="display:none;">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <div class="logo-icon">
+                        <svg viewBox="0 0 40 40" fill="none">
+                            <defs>
+                                <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#7c3aed"/>
+                                    <stop offset="50%" style="stop-color:#06b6d4"/>
+                                    <stop offset="100%" style="stop-color:#10b981"/>
+                                </linearGradient>
+                            </defs>
+                            <circle cx="20" cy="20" r="18" stroke="url(#logoGrad)" stroke-width="2.5" fill="none"/>
+                            <path d="M13 20C13 16.134 16.134 13 20 13C23.866 13 27 16.134 27 20" stroke="url(#logoGrad)" stroke-width="2" stroke-linecap="round"/>
+                            <circle cx="20" cy="20" r="3" fill="url(#logoGrad)"/>
+                            <path d="M20 23V28" stroke="url(#logoGrad)" stroke-width="2" stroke-linecap="round"/>
+                            <path d="M15 25L17 23" stroke="url(#logoGrad)" stroke-width="1.5" stroke-linecap="round"/>
+                            <path d="M25 25L23 23" stroke="url(#logoGrad)" stroke-width="1.5" stroke-linecap="round"/>
+                        </svg>
+                    </div>
+                    <div class="logo-text">
+                        <h1>HüseyinAI</h1>
+                        <span class="logo-badge">ULTRA PRO MAX</span>
+                    </div>
+                </div>
+                <button class="sidebar-toggle" id="sidebarToggle" aria-label="Menüyü kapat">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M15 18l-6-6 6-6"/>
+                    </svg>
+                </button>
+            </div>
+            <button class="new-chat-btn" id="newChatBtn">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 5v14M5 12h14"/>
+                </svg>
+                Yeni Sohbet
+            </button>
+            <div class="sidebar-section">
+                <h3 class="sidebar-section-title">Sohbet Geçmişi</h3>
+                <div class="chat-history" id="chatHistory"></div>
+            </div>
+            <!-- User Profile Footer -->
+            <div class="sidebar-footer">
+                <div class="user-profile" id="userProfile">
+                    <div class="user-avatar" id="userAvatar">H</div>
+                    <div class="user-info">
+                        <span class="user-name" id="userName">Kullanıcı</span>
+                        <span class="user-email" id="userEmail">user@mail.com</span>
+                    </div>
+                    <button class="logout-btn" id="logoutBtn" title="Çıkış Yap">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </aside>
+        <!-- Main Chat Area -->
+        <main class="main-content">
+            <header class="top-bar">
+                <button class="menu-btn" id="menuBtn" aria-label="Menüyü aç">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 12h18M3 6h18M3 18h18"/>
+                    </svg>
+                </button>
+                <div class="top-bar-title">
+                    <h2 id="chatTitle">Yeni Sohbet</h2>
+                    <span class="top-bar-subtitle">Ultra Pro Max — Her soruyu yanıtlar 🚀</span>
+                </div>
+                <div class="top-bar-actions">
+                    <button class="icon-btn" id="clearChatBtn" title="Sohbeti temizle">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                        </svg>
+                    </button>
+                </div>
+            </header>
+            <div class="chat-container" id="chatContainer">
+                <div class="chat-messages" id="chatMessages"></div>
+            </div>
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <div class="input-container">
+                        <textarea id="messageInput" placeholder="Mesajınızı yazın..." rows="1" aria-label="Mesaj giriş alanı"></textarea>
+                        <div class="input-actions">
+                            <span class="char-count" id="charCount">0</span>
+                            <button class="send-btn" id="sendBtn" disabled aria-label="Mesaj gönder">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <p class="input-hint">HüseyinAI hata yapabilir. Önemli bilgileri doğrulayın.</p>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
